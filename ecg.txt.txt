@@ -1,0 +1,97 @@
+const int baselineHeartRate = 75; const int sampleInterval = 20; 
+const int heartRateHighThreshold = baselineHeartRate + 10; 
+const int heartRateLowThreshold = baselineHeartRate - 10; 
+const int buzzerPin = 8; const int ledPin = 9;
+
+unsigned long lastBeatTime = 0; float heartRate = 0;
+ int lastValue = 0; unsigned long lastPeakTime = 0; float simulatedTime = 0;
+  float currentFrequency = 1.0;
+
+unsigned long currentRRInterval = 0; float sdnn = 0; float rmssd = 0;
+ int rrIntervals[100]; int rrIndex = 0; int beatCount = 0;
+  bool stableHeartRate = false; int stableBeatsNeeded = 5;
+
+unsigned long alertStartTime = 0; const unsigned long alertDuration = 5000;
+
+enum State { MONITORING, ALERT_PAUSED }; State currentState = MONITORING;
+
+float simulateECG() { float t = simulatedTime / 1000.0;
+ float amplitude = 400; float offset = 512; 
+ return constrain(offset + amplitude * sin(2 * PI * currentFrequency * t), 0.0, 1023.0); }
+
+void calculateHRV() { if (rrIndex >= 100) { float meanRR = 0, sqDiffSum = 0;
+ for (int i = 0; i < 100; i++) { meanRR += rrIntervals[i]; 
+ if (i > 0) sqDiffSum += pow(rrIntervals[i] - rrIntervals[i - 1], 2);
+  } meanRR /= 100; float sdnnSum = 0; for (int i = 0; i < 100; i++) { sdnnSum += pow(rrIntervals[i] - meanRR, 2);
+   } sdnn = sqrt(sdnnSum / 100); rmssd = sqrt(sqDiffSum / 99); } }
+
+void triggerAlert(int toneFreq) { alertStartTime = millis();
+ tone(buzzerPin, toneFreq); digitalWrite(ledPin, HIGH); 
+ currentState = ALERT_PAUSED; }
+
+void setup() { Serial.begin(115200); Serial.println("Improved ECG Stress Monitor Started");
+ Serial.println("Type 'R' in the Serial Monitor to reset after an alert.");
+  pinMode(buzzerPin, OUTPUT); pinMode(ledPin, OUTPUT);
+   noTone(buzzerPin); digitalWrite(ledPin, LOW); }
+
+void loop() { if (currentState == MONITORING) { int rawECG = simulateECG(); simulatedTime += sampleInterval;
+
+int threshold = 550;
+
+Serial.print(rawECG);
+Serial.print(",");
+Serial.println(heartRate);
+
+if (rawECG > threshold && lastValue <= threshold && millis() - lastPeakTime > 300) {
+  if (lastBeatTime != 0) {
+    currentRRInterval = millis() - lastBeatTime;
+    heartRate = 60000.0 / currentRRInterval;
+    Serial.print("Heart Rate: ");
+    Serial.print(heartRate);
+    Serial.print(" BPM");
+
+    if (++beatCount >= stableBeatsNeeded) {
+      stableHeartRate = true;
+      if (beatCount > stableBeatsNeeded + 1) {
+        rrIntervals[rrIndex % 100] = currentRRInterval;
+        rrIndex++;
+        calculateHRV();
+        Serial.print(", SDNN: ");
+        Serial.print(sdnn);
+        Serial.print(", RMSSD: ");
+        Serial.print(rmssd);
+      }
+
+      if (heartRate > heartRateHighThreshold) {
+        Serial.println(" *** HIGH HEART RATE ALERT! ***");
+        triggerAlert(1000);
+      } else if (heartRate < heartRateLowThreshold && heartRate > 0) {
+        Serial.println(" *** LOW HEART RATE ALERT! ***");
+        triggerAlert(500);
+      } else {
+        Serial.println(" (Normal)");
+        noTone(buzzerPin);
+        digitalWrite(ledPin, LOW);
+      }
+    } else {
+      Serial.println(" (Stabilizing...)");
+    }
+  }
+  lastBeatTime = millis();
+  lastPeakTime = millis();
+}
+
+lastValue = rawECG;
+delay(sampleInterval);
+
+if (millis() > 10000) currentFrequency = 1.5;
+if (millis() > 30000) currentFrequency = 0.8;
+
+} else if (currentState == ALERT_PAUSED) { if (millis() - alertStartTime > alertDuration) { noTone(buzzerPin);
+ } if (Serial.available()) { char cmd = Serial.read();
+  if (cmd == 'R' || cmd == 'r') { Serial.println("Resuming monitoring..."); 
+  currentState = MONITORING; stableHeartRate = false; rrIndex = 0;
+   beatCount = 0; memset(rrIntervals, 0, sizeof(rrIntervals)); lastBeatTime = 0;
+    noTone(buzzerPin); digitalWrite(ledPin, LOW);
+     } } delay(100);
+ } }
